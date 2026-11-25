@@ -4,7 +4,7 @@
 target:
   id: ci-target-model
   type: openai
-  model: example-model
+  model: gpt-4o-mini
   api_key_env_var: OPENAI_API_KEY
 
 benchmark:
