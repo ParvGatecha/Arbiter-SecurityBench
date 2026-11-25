@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Credentials come strictly from GitHub Actions Secrets, never config files.
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       ASB_NON_INTERACTIVE: "1"
 
     steps:
@@ -42,6 +42,13 @@ jobs:
             --report-format json,html \
             --export-report \
             --json > benchmark_ci_output.json
+
+      - name: Print CI gate failure summary
+        if: failure()
+        run: |
+          if [ -f benchmark_ci_output.json ]; then
+            python -c "import json; d=json.load(open('benchmark_ci_output.json')); print(json.dumps({'run_status': d.get('run',{}).get('status'), 'completed_tests': d.get('run',{}).get('completed_tests'), 'failed_tests': d.get('run',{}).get('failed_tests'), 'error_details': d.get('run',{}).get('error_details'), 'gate_evaluation': d.get('gate_evaluation')}, indent=2))"
+          fi
 
       - name: Upload JSON and HTML report artifacts
         if: always()

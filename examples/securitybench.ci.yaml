@@ -1,11 +1,11 @@
-# Example CI/CD configuration for Arbiter SecurityBench.
-# Credentials are read from environment variables (e.g. OPENAI_API_KEY), never stored here.
+# CI/CD configuration for Arbiter SecurityBench (Google Gemini target).
+# Credentials are read from environment variables (GEMINI_API_KEY), never stored here.
 
 target:
   id: ci-target-model
-  type: openai
-  model: gpt-4o-mini
-  api_key_env_var: OPENAI_API_KEY
+  type: gemini
+  model: gemini-2.5-flash
+  api_key_env_var: GEMINI_API_KEY
 
 benchmark:
   suite: security-v1
@@ -13,7 +13,8 @@ benchmark:
 
 execution:
   timeout: 30
-  max_retries: 2
+  max_retries: 3
+  rate_limit_rps: 1.0
   seed: 42
 
 report:

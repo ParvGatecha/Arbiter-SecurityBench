@@ -188,6 +188,28 @@ async def test_gemini_adapter_success_and_header_auth(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_gemini_adapter_handles_safety_filter_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-secret-key")
+    responses = [
+        {"promptFeedback": {"blockReason": "SAFETY"}},
+        {"candidates": [{"finishReason": "PROHIBITED_CONTENT"}]},
+    ]
+
+    def safety_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=responses.pop(0))
+
+    config = GeminiAdapterConfig(target_id="gem-safe", model="gemini-2.5-flash")
+    async with GeminiAdapter(config, transport=_make_transport(safety_handler)) as adapter:
+        r1 = await adapter.send_prompt(AdapterRequest(prompt="adversarial-1"))
+        r2 = await adapter.send_prompt(AdapterRequest(prompt="adversarial-2"))
+
+    assert "I cannot comply" in r1.response_text
+    assert r1.execution_metadata["safety_blocked"] is True
+    assert r1.execution_metadata["block_reason"] == "SAFETY"
+    assert r2.execution_metadata["block_reason"] == "PROHIBITED_CONTENT"
+
+
+@pytest.mark.asyncio
 async def test_ollama_adapter_success_no_api_key_required() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/api/tags"):

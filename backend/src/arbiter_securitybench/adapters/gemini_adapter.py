@@ -17,6 +17,14 @@ from arbiter_securitybench.adapters.models import (
     TokenUsage,
 )
 
+_SAFETY_FINISH_REASONS = frozenset({
+    "SAFETY",
+    "PROHIBITED_CONTENT",
+    "BLOCKLIST",
+    "SPII",
+    "RECITATION",
+})
+
 
 class GeminiAdapter(BaseHTTPTargetAdapter):
     """Adapter for Google Gemini generateContent REST APIs."""
@@ -90,23 +98,94 @@ class GeminiAdapter(BaseHTTPTargetAdapter):
         url = f"{self._config.base_url}/{self._config.api_version}/models/{self._config.model}"
         return "GET", url, self._headers()
 
+    def _safety_refusal_response(
+        self,
+        payload: dict[str, Any],
+        latency: float,
+        response: httpx.Response,
+        *,
+        block_reason: str,
+        finish_reason: str | None = None,
+        safety_ratings: Any = None,
+    ) -> AdapterResponse:
+        usage_raw = payload.get("usageMetadata")
+        usage = None
+        if isinstance(usage_raw, dict):
+            usage = TokenUsage(
+                input_tokens=usage_raw.get("promptTokenCount"),
+                output_tokens=usage_raw.get("candidatesTokenCount"),
+                total_tokens=usage_raw.get("totalTokenCount"),
+            )
+        return AdapterResponse(
+            response_text=(
+                f"I cannot comply with this request. Content blocked by safety filter "
+                f"(reason: {block_reason})."
+            ),
+            raw_response=payload,
+            latency=latency,
+            token_usage=usage,
+            model_information=ModelInformation(
+                provider="google-gemini",
+                model_name=str(payload.get("modelVersion") or self._config.model),
+                modality=self.target_type,
+            ),
+            execution_metadata={
+                "status_code": response.status_code,
+                "safety_blocked": True,
+                "block_reason": block_reason,
+                "finish_reason": finish_reason,
+                "safety_ratings": safety_ratings,
+            },
+        )
+
     def _parse_http_response(
         self,
         payload: dict[str, Any],
         latency: float,
         response: httpx.Response,
     ) -> AdapterResponse:
+        prompt_feedback = payload.get("promptFeedback")
+        feedback_reason = (
+            prompt_feedback.get("blockReason")
+            if isinstance(prompt_feedback, dict)
+            else None
+        )
+
         candidates = payload.get("candidates")
         if not isinstance(candidates, list) or not candidates:
+            if isinstance(feedback_reason, str) and feedback_reason.strip():
+                return self._safety_refusal_response(
+                    payload,
+                    latency,
+                    response,
+                    block_reason=feedback_reason.strip(),
+                    safety_ratings=prompt_feedback.get("safetyRatings")
+                    if isinstance(prompt_feedback, dict)
+                    else None,
+                )
             raise AdapterResponseError(
                 "Gemini response missing non-empty 'candidates' list.",
                 component="adapters.gemini",
                 details={"target_id": self.target_id},
             )
         first = candidates[0]
+        finish_reason = first.get("finishReason") if isinstance(first, dict) else None
+        safety_ratings = first.get("safetyRatings") if isinstance(first, dict) else None
         content = first.get("content") if isinstance(first, dict) else None
         parts = content.get("parts") if isinstance(content, dict) else None
         if not isinstance(parts, list):
+            if (
+                isinstance(finish_reason, str)
+                and finish_reason.strip().upper() in _SAFETY_FINISH_REASONS
+            ):
+                return self._safety_refusal_response(
+                    payload,
+                    latency,
+                    response,
+                    block_reason=finish_reason.strip().upper(),
+                    finish_reason=finish_reason,
+                    safety_ratings=safety_ratings,
+                )
             raise AdapterResponseError(
                 "Gemini response missing 'candidates[0].content.parts'.",
                 component="adapters.gemini",
@@ -115,6 +194,18 @@ class GeminiAdapter(BaseHTTPTargetAdapter):
 
         texts = [p["text"] for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str)]
         if not texts:
+            if (
+                isinstance(finish_reason, str)
+                and finish_reason.strip().upper() in _SAFETY_FINISH_REASONS
+            ):
+                return self._safety_refusal_response(
+                    payload,
+                    latency,
+                    response,
+                    block_reason=finish_reason.strip().upper(),
+                    finish_reason=finish_reason,
+                    safety_ratings=safety_ratings,
+                )
             raise AdapterResponseError(
                 "Gemini response candidate contained no text parts.",
                 component="adapters.gemini",
