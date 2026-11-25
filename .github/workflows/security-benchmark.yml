@@ -1,0 +1,55 @@
+name: AI Security Benchmark CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security-benchmark:
+    runs-on: ubuntu-latest
+    env:
+      # Credentials come strictly from GitHub Actions Secrets, never config files.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ASB_NON_INTERACTIVE: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Arbiter SecurityBench
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Validate benchmark dataset
+        run: arbiter dataset validate --json
+
+      - name: Run AI security benchmark with security gates
+        # Optional: pass `--baseline-file baselines/main_report.json` when comparing against main.
+        run: |
+          arbiter --non-interactive benchmark run \
+            --config examples/securitybench.ci.yaml \
+            --report-format json,html \
+            --export-report \
+            --json > benchmark_ci_output.json
+
+      - name: Upload JSON and HTML report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arbiter-securitybench-reports
+          path: |
+            reports/*.json
+            reports/*.html
+            benchmark_ci_output.json
+          if-no-files-found: warn

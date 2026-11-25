@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arbiter-securitybench"
+version = "0.1.0-alpha.0"
+description = "Independent open-source AI security benchmarking platform for LLMs, RAG systems, and autonomous AI agents."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    { name = "Arbiter SecurityBench Contributors" }
+]
+keywords = [
+    "ai-security",
+    "llm-security",
+    "rag-security",
+    "agent-security",
+    "benchmarking",
+    "prompt-injection",
+    "red-teaming",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.8,<3.0",
+    "httpx>=0.27,<1.0",
+    "numpy>=2.0,<3.0",
+    "scipy>=1.14,<2.0",
+    "typer>=0.15,<1.0",
+    "rich>=13.9,<15.0",
+    "pyyaml>=6.0,<7.0",
+    "reportlab>=4.0,<6.0",
+]
+
+[project.scripts]
+arbiter = "arbiter_securitybench.cli.app:main"
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+]
+workers = [
+    "celery>=5.4,<6.0",
+    "redis>=5.0,<6.0",
+]
+stats = [
+    "numpy>=2.0,<3.0",
+    "scipy>=1.14,<2.0",
+]
+storage = [
+    "sqlalchemy>=2.0,<3.0",
+    "psycopg[binary]>=3.2,<4.0",
+    "alembic>=1.13,<2.0",
+]
+dev = [
+    "pytest>=8.3,<10.0",
+    "pytest-asyncio>=0.24,<1.0",
+    "httpx>=0.27,<1.0",
+    "mypy>=1.11,<2.0",
+    "ruff>=0.6,<1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["backend/src"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend/src"]
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["backend/src", "backend/tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "backend/src"
