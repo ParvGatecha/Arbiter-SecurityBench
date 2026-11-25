@@ -49,7 +49,6 @@ from arbiter_securitybench.contracts import (
     PLATFORM_VERSION,
     SCHEMA_VERSION,
     ConfigurationError,
-    RunStatus,
     SecurityBenchError,
     SecurityCategory,
     TargetModality,
@@ -386,6 +385,10 @@ def benchmark_inspect(
 @benchmark_app.command("run")
 def benchmark_run(
     ctx: typer.Context,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to securitybench.yaml configuration file."),
+    ] = None,
     suite: Annotated[
         str | None,
         typer.Option("--suite", "-s", help="Benchmark suite ID or alias (overrides securitybench.yaml)."),
@@ -468,7 +471,7 @@ def benchmark_run(
     is_non_interactive = state.non_interactive or non_interactive
 
     try:
-        cfg = load_config(state.config_path)
+        cfg = load_config(config or state.config_path)
         if timeout is not None:
             cfg = cfg.model_copy(
                 update={"execution": cfg.execution.model_copy(update={"timeout": timeout})}
