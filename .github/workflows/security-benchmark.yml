@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      test_limit:
+        description: "Number of test cases to execute (default 100 for Gemma 4 31B's 30 RPM / 14.4k RPD quota)"
+        required: false
+        default: "100"
 
 permissions:
   contents: read
@@ -29,16 +34,20 @@ jobs:
       - name: Install Arbiter SecurityBench
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[dev,api]"
+
+      - name: Run unit and integration test suite
+        run: pytest -q
 
       - name: Validate benchmark dataset
         run: arbiter dataset validate --json
 
       - name: Run AI security benchmark with security gates
-        # Optional: pass `--baseline-file baselines/main_report.json` when comparing against main.
+        # Gemma 4 31B supports 30 RPM / 14.4k RPD, allowing full 100-case runs.
         run: |
           arbiter --non-interactive benchmark run \
             --config examples/securitybench.ci.yaml \
+            --limit ${{ inputs.test_limit || '100' }} \
             --report-format json,html \
             --export-report \
             --json > benchmark_ci_output.json

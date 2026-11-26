@@ -1,10 +1,10 @@
-# CI/CD configuration for Arbiter SecurityBench (Google Gemini target).
+# CI/CD configuration for Arbiter SecurityBench (Google Gemma 4 31B via Gemini API).
 # Credentials are read from environment variables (GEMINI_API_KEY), never stored here.
 
 target:
   id: ci-target-model
   type: gemini
-  model: gemini-3.8-flash
+  model: gemma-4-31b-it
   api_key_env_var: GEMINI_API_KEY
 
 benchmark:
@@ -14,7 +14,8 @@ benchmark:
 execution:
   timeout: 60
   max_retries: 2
-  rate_limit_rps: 0.25
+  # 0.35 RPS (~21 RPM) stays below Gemma 4 31B's 30 RPM and 16k TPM limits.
+  rate_limit_rps: 0.35
   seed: 42
 
 report:
