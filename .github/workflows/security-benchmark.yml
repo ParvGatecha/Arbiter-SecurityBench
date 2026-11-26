@@ -47,7 +47,7 @@ jobs:
         if: failure()
         run: |
           if [ -f benchmark_ci_output.json ]; then
-            python -c "import glob, json; d=json.load(open('benchmark_ci_output.json')); reports=sorted(glob.glob('reports/*.json')); errs=(json.load(open(reports[-1])).get('failed_and_inconclusive_tests',{}).get('execution_errors',[])[:3] if reports else []); print(json.dumps({'run_status': d.get('run',{}).get('status'), 'completed_tests': d.get('run',{}).get('completed_tests'), 'failed_tests': d.get('run',{}).get('failed_tests'), 'error_details': d.get('run',{}).get('error_details'), 'sample_execution_errors': errs, 'gate_evaluation': d.get('gate_evaluation')}, indent=2))"
+            python -c "import collections, glob, json; d=json.load(open('benchmark_ci_output.json')); reports=sorted(glob.glob('reports/*.json')); rep=json.load(open(reports[-1])) if reports else {}; errs=rep.get('failed_and_inconclusive_tests',{}).get('execution_errors',[]); counts=dict(collections.Counter(e.get('error_message') for e in errs)); print(json.dumps({'run_status': d.get('run',{}).get('status'), 'completed_tests': d.get('run',{}).get('completed_tests'), 'failed_tests': d.get('run',{}).get('failed_tests'), 'error_details': d.get('run',{}).get('error_details'), 'unique_execution_error_counts': counts, 'sample_execution_errors': errs[:3], 'gate_evaluation': d.get('gate_evaluation')}, indent=2))"
           fi
 
       - name: Upload JSON and HTML report artifacts

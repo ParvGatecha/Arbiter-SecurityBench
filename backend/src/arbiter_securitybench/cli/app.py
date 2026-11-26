@@ -14,6 +14,7 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
+from arbiter_securitybench.adapters import RetryPolicyConfig
 from arbiter_securitybench.attacks import AttackExecutionConfig
 from arbiter_securitybench.ci import (
     SecurityGatePolicy,
@@ -543,9 +544,14 @@ def benchmark_run(
             run_repository=run_repo,
             evaluator=evaluator,
         )
+        per_turn_budget = (
+            cfg.execution.timeout * (cfg.execution.max_retries + 1)
+            + cfg.execution.max_retries * 5.0
+        )
         exec_cfg = AttackExecutionConfig(
             per_turn_timeout_seconds=cfg.execution.timeout,
-            per_test_timeout_seconds=max(cfg.execution.timeout * 3.0, 60.0),
+            per_test_timeout_seconds=max(per_turn_budget * 3.0, 240.0),
+            retry_policy=RetryPolicyConfig(max_retries=0),
             seed=cfg.execution.seed,
             execute_variants=cfg.execution.execute_variants,
             max_variants_per_test=cfg.execution.max_variants_per_test,

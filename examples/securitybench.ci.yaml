@@ -12,9 +12,9 @@ benchmark:
   version: "1.0.0"
 
 execution:
-  timeout: 30
-  max_retries: 3
-  rate_limit_rps: 1.0
+  timeout: 60
+  max_retries: 2
+  rate_limit_rps: 0.25
   seed: 42
 
 report:

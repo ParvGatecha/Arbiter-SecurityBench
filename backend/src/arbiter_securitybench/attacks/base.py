@@ -160,8 +160,17 @@ class BaseConversationAttack(Attack, ABC):
                 )
                 coro = target.send_prompt(req)
                 if per_turn_timeout_seconds is not None:
+                    adapter_cfg = getattr(target, "_base_config", None)
+                    adapter_retry = getattr(adapter_cfg, "retry_policy", None)
+                    wait_budget = per_turn_timeout_seconds
+                    if adapter_retry is not None and getattr(adapter_retry, "max_retries", 0) > 0:
+                        retries = int(adapter_retry.max_retries)
+                        max_backoff = float(getattr(adapter_retry, "max_backoff_seconds", 5.0))
+                        wait_budget = (per_turn_timeout_seconds * (retries + 1)) + (
+                            retries * max_backoff
+                        )
                     resp: AdapterResponse = await asyncio.wait_for(
-                        coro, timeout=per_turn_timeout_seconds
+                        coro, timeout=wait_budget
                     )
                 else:
                     resp = await coro
