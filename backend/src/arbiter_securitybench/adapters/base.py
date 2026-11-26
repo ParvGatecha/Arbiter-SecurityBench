@@ -289,15 +289,41 @@ class BaseHTTPTargetAdapter(TargetAdapter, ABC):
         except Exception:  # noqa: BLE001 - health_check returns bool on connectivity/auth failures
             return False
 
+    @staticmethod
+    def _extract_upstream_error(response: httpx.Response) -> str | None:
+        try:
+            payload = response.json()
+        except ValueError:
+            text = response.text.strip()
+            return text[:300] if text else None
+        if isinstance(payload, dict):
+            err = payload.get("error")
+            if isinstance(err, dict):
+                msg = err.get("message") or err.get("status")
+                if isinstance(msg, str) and msg.strip():
+                    return msg.strip()[:300]
+            if isinstance(err, str) and err.strip():
+                return err.strip()[:300]
+            msg = payload.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()[:300]
+        return None
+
     def _raise_for_status(self, response: httpx.Response) -> None:
         code = response.status_code
         if 200 <= code < 300:
             return
+        upstream_msg = self._extract_upstream_error(response)
+        suffix = f" Details: {upstream_msg}" if upstream_msg else ""
+        base_details: dict[str, Any] = {"target_id": self.target_id, "status_code": code}
+        if upstream_msg:
+            base_details["upstream_message"] = upstream_msg
+
         if code in {401, 403}:
             raise AdapterAuthenticationError(
-                f"Authentication failed for target {self.target_id!r} (HTTP {code}).",
+                f"Authentication failed for target {self.target_id!r} (HTTP {code}).{suffix}",
                 component=f"adapters.{self.adapter_type}",
-                details={"target_id": self.target_id, "status_code": code},
+                details=base_details,
             )
         if code == 429:
             retry_after_raw = response.headers.get("Retry-After")
@@ -308,19 +334,19 @@ class BaseHTTPTargetAdapter(TargetAdapter, ABC):
                 except ValueError:
                     retry_after = None
             raise AdapterRateLimitError(
-                f"Rate limit exceeded by target {self.target_id!r} (HTTP 429).",
+                f"Rate limit exceeded by target {self.target_id!r} (HTTP 429).{suffix}",
                 retry_after_seconds=retry_after,
                 component=f"adapters.{self.adapter_type}",
-                details={"target_id": self.target_id, "status_code": code},
+                details=base_details,
             )
         if code in self._http_config.retry_policy.retryable_status_codes or code >= 500:
             raise AdapterConnectionError(
-                f"Transient server error from target {self.target_id!r} (HTTP {code}).",
+                f"Transient server error from target {self.target_id!r} (HTTP {code}).{suffix}",
                 component=f"adapters.{self.adapter_type}",
-                details={"target_id": self.target_id, "status_code": code},
+                details=base_details,
             )
         raise AdapterResponseError(
-            f"Unexpected HTTP {code} error from target {self.target_id!r}.",
+            f"Unexpected HTTP {code} error from target {self.target_id!r}.{suffix}",
             component=f"adapters.{self.adapter_type}",
-            details={"target_id": self.target_id, "status_code": code},
+            details=base_details,
         )
