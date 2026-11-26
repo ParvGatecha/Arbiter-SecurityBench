@@ -100,7 +100,11 @@ def build_adapter_from_entry(
     if adapter_registry is not None and target_id in adapter_registry.list_target_ids():
         return adapter_registry.get(target_id)
 
-    retry_policy = RetryPolicyConfig(max_retries=execution_cfg.max_retries)
+    retry_policy = RetryPolicyConfig(
+        max_retries=execution_cfg.max_retries,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=15.0,
+    )
     rate_limit = (
         RateLimitConfig(requests_per_second=execution_cfg.rate_limit_rps, burst_capacity=1)
         if execution_cfg.rate_limit_rps is not None

@@ -38,6 +38,7 @@ from arbiter_securitybench.contracts import (
     validate_run_status_transition,
 )
 from arbiter_securitybench.evaluation import NoOpResultEvaluator, ResultEvaluator
+from arbiter_securitybench.execution.checkpoint import ExecutionCheckpointStore
 from arbiter_securitybench.execution.engine import CancellationToken
 from arbiter_securitybench.registry import BenchmarkCoreRegistry
 from arbiter_securitybench.storage import InMemoryRunRepository, RunRepository
@@ -115,6 +116,7 @@ class AttackExecutionEngine:
         metadata: dict[str, Any] | None = None,
         run_id: str | None = None,
         cancellation_token: CancellationToken | None = None,
+        checkpoint_store: ExecutionCheckpointStore | None = None,
     ) -> tuple[BenchmarkRun, list[TestExecutionResult]]:
         """Execute all adversarial test cases in a suite against an explicitly configured target."""
         exec_cfg = config or AttackExecutionConfig()
@@ -196,8 +198,45 @@ class AttackExecutionEngine:
             run.model_copy(update={"status": RunStatus.RUNNING, "started_at": datetime.now(UTC)})
         )
 
+        # Check cross-run checkpoint store before opening any target connection.
+        ordered_results: list[TestExecutionResult | None] = [None] * len(work_items)
+        pending_indices: list[int] = []
+        completed_tests = 0
+        failed_tests = 0
+        checkpoint_reused_count = 0
+
+        for idx, (test_case, _attack, variant) in enumerate(work_items):
+            variant_id = variant.variant_id if variant is not None else None
+            cached = (
+                checkpoint_store.lookup(
+                    test_case,
+                    variant_id=variant_id,
+                    run_id=resolved_run_id,
+                    target_id=target.target_id,
+                )
+                if checkpoint_store is not None
+                else None
+            )
+            if cached is not None:
+                self._run_repo.save_test_result(cached)
+                ordered_results[idx] = cached
+                completed_tests += 1
+                checkpoint_reused_count += 1
+            else:
+                pending_indices.append(idx)
+
+        if checkpoint_reused_count > 0:
+            run = self._run_repo.update_run(
+                run.model_copy(
+                    update={
+                        "completed_tests": completed_tests,
+                        "failed_tests": failed_tests,
+                    }
+                )
+            )
+
         opened_connection = False
-        if isinstance(target, TargetAdapter) and not target.is_connected:
+        if pending_indices and isinstance(target, TargetAdapter) and not target.is_connected:
             try:
                 await target.connect()
                 opened_connection = True
@@ -210,7 +249,9 @@ class AttackExecutionEngine:
                         "error_details": exc.to_record(),
                     }
                 )
-                return self._run_repo.update_run(failed), []
+                return self._run_repo.update_run(failed), [
+                    r for r in ordered_results if r is not None
+                ]
 
         rate_limiter = (
             AsyncTokenBucketRateLimiter(exec_cfg.rate_limit)
@@ -218,44 +259,41 @@ class AttackExecutionEngine:
             else None
         )
 
-        results: list[TestExecutionResult] = []
-        completed_tests = 0
-        failed_tests = 0
         cancelled_mid_run = False
+        checkpoint_executed_count = 0
+        state_lock = asyncio.Lock()
 
-        try:
-            for test_case, attack, variant in work_items:
-                if self._is_cancelled(resolved_run_id, cancellation_token):
-                    cancelled_mid_run = True
-                    break
+        async def _run_indexed(idx: int) -> None:
+            nonlocal run, completed_tests, failed_tests, cancelled_mid_run, checkpoint_executed_count
+            test_case, attack, variant = work_items[idx]
+            variant_id = variant.variant_id if variant is not None else None
 
-                result = await self._execute_item(
-                    run_id=resolved_run_id,
-                    test_case=test_case,
-                    attack=attack,
-                    variant=variant,
-                    target=target,
-                    exec_cfg=exec_cfg,
-                    target_config=resolved_target_config,
-                    rate_limiter=rate_limiter,
-                    cancellation_token=cancellation_token,
-                )
+            if self._is_cancelled(resolved_run_id, cancellation_token):
+                cancelled_mid_run = True
+                return
+
+            result = await self._execute_item(
+                run_id=resolved_run_id,
+                test_case=test_case,
+                attack=attack,
+                variant=variant,
+                target=target,
+                exec_cfg=exec_cfg,
+                target_config=resolved_target_config,
+                rate_limiter=rate_limiter,
+                cancellation_token=cancellation_token,
+            )
+
+            async with state_lock:
                 self._run_repo.save_test_result(result)
-                results.append(result)
-
+                ordered_results[idx] = result
                 if result.execution_status == TestExecutionStatus.COMPLETED:
                     completed_tests += 1
+                    checkpoint_executed_count += 1
+                    if checkpoint_store is not None:
+                        checkpoint_store.record(test_case, result, variant_id=variant_id)
                 elif result.execution_status == TestExecutionStatus.CANCELLED:
                     cancelled_mid_run = True
-                    run = self._run_repo.update_run(
-                        run.model_copy(
-                            update={
-                                "completed_tests": completed_tests,
-                                "failed_tests": failed_tests,
-                            }
-                        )
-                    )
-                    break
                 else:
                     failed_tests += 1
 
@@ -267,6 +305,27 @@ class AttackExecutionEngine:
                         }
                     )
                 )
+
+        try:
+            if exec_cfg.max_concurrency <= 1:
+                for idx in pending_indices:
+                    if self._is_cancelled(resolved_run_id, cancellation_token) or cancelled_mid_run:
+                        cancelled_mid_run = True
+                        break
+                    await _run_indexed(idx)
+            else:
+                semaphore = asyncio.Semaphore(exec_cfg.max_concurrency)
+
+                async def _bounded_run(idx: int) -> None:
+                    async with semaphore:
+                        if (
+                            self._is_cancelled(resolved_run_id, cancellation_token)
+                            or cancelled_mid_run
+                        ):
+                            return
+                        await _run_indexed(idx)
+
+                await asyncio.gather(*(_bounded_run(idx) for idx in pending_indices))
         finally:
             if (
                 isinstance(target, TargetAdapter)
@@ -274,6 +333,8 @@ class AttackExecutionEngine:
                 and target.is_connected
             ):
                 await target.close()
+
+        results = [r for r in ordered_results if r is not None]
 
         if cancelled_mid_run or self._is_cancelled(resolved_run_id, cancellation_token):
             final_status = RunStatus.CANCELLED
@@ -285,12 +346,18 @@ class AttackExecutionEngine:
             final_status = RunStatus.FAILED
 
         validate_run_status_transition(run.status, final_status)
+        final_metadata = {
+            **dict(run.metadata),
+            "checkpoint_reused_count": checkpoint_reused_count,
+            "checkpoint_executed_count": checkpoint_executed_count,
+        }
         final_run = run.model_copy(
             update={
                 "status": final_status,
                 "completed_tests": completed_tests,
                 "failed_tests": failed_tests,
                 "completed_at": datetime.now(UTC),
+                "metadata": final_metadata,
             }
         )
         return self._run_repo.update_run(final_run), results

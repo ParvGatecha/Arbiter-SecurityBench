@@ -238,3 +238,59 @@ def test_ci_incomplete_run_fails_and_incompatible_baseline_rejected(
     assert res_incompat.exit_code == ExitCode.CONFIGURATION_ERROR
     err_payload = json.loads(res_incompat.stdout)
     assert err_payload["error"]["error_code"] == "ASB_INCOMPATIBLE_BASELINE"
+
+
+def test_cicd_checkpoint_resumes_only_failed_tests_across_runs(
+    ci_mock_server: str,
+    tmp_path: Path,
+) -> None:
+    cfg_path = _write_ci_config(tmp_path, ci_mock_server)
+    ckpt_path = tmp_path / "ci_ckpt.json"
+
+    # Run 1: call 1 returns 500, calls 2 and 3 succeed -> 2 cached in checkpoint, exit 1
+    _CIConfigurableHandler.mode = "partial_error"
+    _CIConfigurableHandler.call_count = 0
+    res1 = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "run",
+            "--config",
+            str(cfg_path),
+            "--limit",
+            "3",
+            "--checkpoint-file",
+            str(ckpt_path),
+            "--json",
+        ],
+    )
+    assert res1.exit_code == ExitCode.EXECUTION_OR_VALIDATION_FAILED
+    assert ckpt_path.exists()
+    p1 = json.loads(res1.stdout)
+    assert p1["run"]["completed_tests"] == 2
+    assert p1["run"]["failed_tests"] == 1
+    calls_after_run1 = _CIConfigurableHandler.call_count
+
+    # Run 2: recovers; only the 1 failed test case is re-executed against the target!
+    _CIConfigurableHandler.mode = "safe"
+    res2 = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "run",
+            "--config",
+            str(cfg_path),
+            "--limit",
+            "3",
+            "--checkpoint-file",
+            str(ckpt_path),
+            "--json",
+        ],
+    )
+    assert res2.exit_code == ExitCode.SUCCESS
+    p2 = json.loads(res2.stdout)
+    assert p2["run"]["completed_tests"] == 3
+    assert p2["run"]["metadata"]["checkpoint_reused_count"] == 2
+    assert p2["run"]["metadata"]["checkpoint_executed_count"] == 1
+    assert _CIConfigurableHandler.call_count == calls_after_run1 + 1
+

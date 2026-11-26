@@ -13,9 +13,13 @@ benchmark:
 
 execution:
   timeout: 60
-  max_retries: 2
-  # 0.35 RPS (~21 RPM) stays below Gemma 4 31B's 30 RPM and 16k TPM limits.
-  rate_limit_rps: 0.35
+  max_retries: 4
+  # 0.45 RPS (~27 RPM) + concurrency=3 stays below Gemma 4 31B's 30 RPM / 16k TPM caps while overlapping latency.
+  rate_limit_rps: 0.45
+  concurrency: 3
+  # Persist completed test cases so subsequent runs skip already-completed tests.
+  checkpoint: true
+  checkpoint_file: .arbiter/checkpoints/gemma-4-31b-ci.json
   seed: 42
 
 report:

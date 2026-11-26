@@ -61,7 +61,12 @@ from arbiter_securitybench.evaluation import (
     SemanticEvaluator,
     SensitiveInfoEvaluator,
 )
-from arbiter_securitybench.execution import AttackExecutionEngine
+from arbiter_securitybench.execution import (
+    AttackExecutionEngine,
+    ExecutionCheckpointStore,
+    build_checkpoint_scope,
+    default_checkpoint_path,
+)
 from arbiter_securitybench.reporting import ReportExporter
 from arbiter_securitybench.scoring import BenchmarkComparator, SecurityScoringEngine
 
@@ -418,6 +423,21 @@ def benchmark_run(
         int | None,
         typer.Option("--limit", min=1, help="Execute only the first N test cases from the suite."),
     ] = None,
+    concurrency: Annotated[
+        int | None,
+        typer.Option("--concurrency", min=1, max=20, help="Maximum concurrent test executions."),
+    ] = None,
+    checkpoint: Annotated[
+        bool | None,
+        typer.Option(
+            "--checkpoint/--no-checkpoint",
+            help="Skip test cases already COMPLETED in the checkpoint store for this target/suite.",
+        ),
+    ] = None,
+    checkpoint_file: Annotated[
+        Path | None,
+        typer.Option("--checkpoint-file", help="Path to cross-run JSON checkpoint file."),
+    ] = None,
     fail_on_critical: Annotated[
         bool,
         typer.Option("--fail-on-critical", help="Exit with code 4 if any critical attack succeeds."),
@@ -480,6 +500,22 @@ def benchmark_run(
         if max_retries is not None:
             cfg = cfg.model_copy(
                 update={"execution": cfg.execution.model_copy(update={"max_retries": max_retries})}
+            )
+        if concurrency is not None:
+            cfg = cfg.model_copy(
+                update={"execution": cfg.execution.model_copy(update={"concurrency": concurrency})}
+            )
+        if checkpoint is not None:
+            cfg = cfg.model_copy(
+                update={"execution": cfg.execution.model_copy(update={"checkpoint": checkpoint})}
+            )
+        if checkpoint_file is not None:
+            cfg = cfg.model_copy(
+                update={
+                    "execution": cfg.execution.model_copy(
+                        update={"checkpoint": True, "checkpoint_file": str(checkpoint_file)}
+                    )
+                }
             )
 
         targets = cfg.resolved_targets()
@@ -546,17 +582,33 @@ def benchmark_run(
         )
         per_turn_budget = (
             cfg.execution.timeout * (cfg.execution.max_retries + 1)
-            + cfg.execution.max_retries * 5.0
+            + cfg.execution.max_retries * 15.0
         )
         exec_cfg = AttackExecutionConfig(
             per_turn_timeout_seconds=cfg.execution.timeout,
             per_test_timeout_seconds=max(per_turn_budget * 3.0, 240.0),
             retry_policy=RetryPolicyConfig(max_retries=0),
+            max_concurrency=cfg.execution.concurrency,
             seed=cfg.execution.seed,
             execute_variants=cfg.execution.execute_variants,
             max_variants_per_test=cfg.execution.max_variants_per_test,
             allowed_target_ids=frozenset({target_id}),
         )
+
+        checkpoint_store: ExecutionCheckpointStore | None = None
+        if cfg.execution.checkpoint:
+            scope = build_checkpoint_scope(
+                suite=loaded_suite,
+                target=adapter,
+                execute_variants=exec_cfg.execute_variants,
+                seed=exec_cfg.seed,
+            )
+            ckpt_path = (
+                Path(cfg.execution.checkpoint_file)
+                if cfg.execution.checkpoint_file
+                else default_checkpoint_path(scope)
+            )
+            checkpoint_store = ExecutionCheckpointStore(ckpt_path, scope)
 
         show_spinner = (not use_json) and (not is_non_interactive)
         with progress_spinner(
@@ -564,7 +616,12 @@ def benchmark_run(
             enabled=show_spinner,
         ):
             run, results = asyncio.run(
-                engine.execute_suite(loaded_suite, adapter, config=exec_cfg)
+                engine.execute_suite(
+                    loaded_suite,
+                    adapter,
+                    config=exec_cfg,
+                    checkpoint_store=checkpoint_store,
+                )
             )
 
         candidate_samples = scoring_engine.extract_scored_samples(loaded_suite, results)

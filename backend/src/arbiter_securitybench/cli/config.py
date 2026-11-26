@@ -67,6 +67,9 @@ class ExecutionSectionConfig(BaseModel):
     timeout: float = Field(default=30.0, gt=0.0)
     max_retries: int = Field(default=2, ge=0, le=10)
     rate_limit_rps: float | None = Field(default=None, gt=0.0)
+    concurrency: int = Field(default=1, ge=1, le=20)
+    checkpoint: bool = False
+    checkpoint_file: str | None = None
     seed: int = Field(default=0, ge=0)
     execute_variants: bool = False
     max_variants_per_test: int = Field(default=1, ge=1, le=10)

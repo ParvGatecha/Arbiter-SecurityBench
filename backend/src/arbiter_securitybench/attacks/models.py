@@ -96,6 +96,7 @@ class AttackExecutionConfig(BaseModel):
         default_factory=lambda: RetryPolicyConfig(max_retries=0)
     )
     rate_limit: RateLimitConfig | None = None
+    max_concurrency: int = Field(default=1, ge=1, le=20)
     seed: int = Field(default=0, ge=0)
     execute_variants: bool = Field(default=False)
     max_variants_per_test: int = Field(default=1, ge=1, le=10)

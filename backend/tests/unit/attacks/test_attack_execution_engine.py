@@ -32,7 +32,12 @@ from arbiter_securitybench.contracts import (
     TestCase,
     TestExecutionStatus,
 )
-from arbiter_securitybench.execution import AttackExecutionEngine, CancellationToken
+from arbiter_securitybench.execution import (
+    AttackExecutionEngine,
+    CancellationToken,
+    ExecutionCheckpointStore,
+    build_checkpoint_scope,
+)
 from arbiter_securitybench.registry import BenchmarkCoreRegistry
 from arbiter_securitybench.storage import InMemoryRunRepository
 from conftest import build_suite, build_test_case
@@ -264,3 +269,74 @@ async def test_attack_engine_enforces_explicit_allowed_targets() -> None:
             adapter,
             config=AttackExecutionConfig(allowed_target_ids=frozenset({"approved-only"})),
         )
+
+
+@pytest.mark.asyncio
+async def test_attack_engine_checkpoint_reuse_and_bounded_concurrency(tmp_path: Any) -> None:
+    calls: dict[str, int] = {}
+    fail_second = True
+
+    def handler(req: AdapterRequest) -> str:
+        tid = req.metadata["test_id"]
+        calls[tid] = calls.get(tid, 0) + 1
+        if tid == "tc-2" and fail_second:
+            raise AdapterConnectionError("transient 503")
+        return f"safe-reply:{tid}"
+
+    suite = build_suite(
+        suite_id="ckpt-suite",
+        test_cases=[
+            build_test_case(test_id="tc-1"),
+            build_test_case(test_id="tc-2"),
+            build_test_case(test_id="tc-3"),
+        ],
+    )
+    adapter = CustomPythonAdapter(
+        CustomPythonAdapterConfig(
+            target_id="ckpt-target",
+            model_name="gemma-4-31b-it",
+            retry_policy=RetryPolicyConfig(max_retries=0),
+        ),
+        handler,
+    )
+    scope = build_checkpoint_scope(suite=suite, target=adapter)
+    ckpt_path = tmp_path / "ckpt.json"
+    store1 = ExecutionCheckpointStore(ckpt_path, scope)
+    engine = AttackExecutionEngine()
+    exec_cfg = AttackExecutionConfig(max_concurrency=2)
+
+    run1, res1 = await engine.execute_suite(
+        suite, adapter, config=exec_cfg, checkpoint_store=store1
+    )
+    assert run1.status == RunStatus.PARTIALLY_COMPLETED
+    assert run1.completed_tests == 2
+    assert run1.failed_tests == 1
+    assert run1.metadata["checkpoint_reused_count"] == 0
+    assert run1.metadata["checkpoint_executed_count"] == 2
+    assert [r.test_id for r in res1] == ["tc-1", "tc-2", "tc-3"]
+
+    # Second run loads checkpoint from disk: tc-1 and tc-3 are skipped; only tc-2 executes.
+    fail_second = False
+    store2 = ExecutionCheckpointStore(ckpt_path, scope)
+    run2, res2 = await engine.execute_suite(
+        suite, adapter, config=exec_cfg, checkpoint_store=store2
+    )
+    assert run2.status == RunStatus.COMPLETED
+    assert run2.completed_tests == 3
+    assert run2.failed_tests == 0
+    assert run2.metadata["checkpoint_reused_count"] == 2
+    assert run2.metadata["checkpoint_executed_count"] == 1
+    assert calls == {"tc-1": 1, "tc-2": 2, "tc-3": 1}
+    assert res2[0].raw_response is not None and res2[0].raw_response["checkpoint_reused"] is True
+    assert res2[1].raw_response is not None and "checkpoint_reused" not in res2[1].raw_response
+
+    # Changing target model invalidates scope so tests do not leak across models.
+    other_adapter = CustomPythonAdapter(
+        CustomPythonAdapterConfig(target_id="ckpt-target", model_name="other-model"),
+        handler,
+    )
+    other_scope = build_checkpoint_scope(suite=suite, target=other_adapter)
+    store3 = ExecutionCheckpointStore(ckpt_path, other_scope)
+    run3, _ = await engine.execute_suite(suite, other_adapter, config=exec_cfg, checkpoint_store=store3)
+    assert run3.metadata["checkpoint_reused_count"] == 0
+    assert run3.metadata["checkpoint_executed_count"] == 3
